@@ -1,3 +1,21 @@
+// 初始化加载设置
+document.addEventListener('DOMContentLoaded', async () => {
+    const res = await chrome.storage.local.get(['hotkey', 'port']);
+    document.getElementById('input-hotkey').value = res.hotkey || 'Home';
+    document.getElementById('input-port').value = res.port || '18888';
+});
+
+// 保存设置
+document.getElementById('btn-save').addEventListener('click', async () => {
+    const hotkey = document.getElementById('input-hotkey').value.trim() || 'Home';
+    const port = document.getElementById('input-port').value.trim() || '18888';
+    
+    await chrome.storage.local.set({ hotkey, port });
+    document.getElementById('status').textContent = '✅ 设置已保存，页面刷新后完全生效';
+    setTimeout(() => document.getElementById('status').textContent = '准备就绪', 2000);
+});
+
+// 发送请求逻辑
 document.getElementById('btn-send').addEventListener('click', async () => {
     const statusEl = document.getElementById('status');
     statusEl.textContent = '正在获取当前页面信息...';
@@ -21,10 +39,11 @@ document.getElementById('btn-send').addEventListener('click', async () => {
     statusEl.textContent = '正在提取 Cookies...';
 
     try {
-        // 2. 获取该域名的所有 Cookies（包括 HttpOnly）
-        const cookies = await chrome.cookies.getAll({ url: videoUrl });
+        // 动态读取端口
+        const res = await chrome.storage.local.get(['port']);
+        const currentPort = res.port || '18888';
 
-        // 3. 转换为 Netscape 格式
+        const cookies = await chrome.cookies.getAll({ url: videoUrl });
         const cookieString = cookies.map(c => 
             [c.domain, c.hostOnly ? 'FALSE' : 'TRUE', c.path, c.secure ? 'TRUE' : 'FALSE',
              Math.floor(c.expirationDate || 0), c.name, c.value].join('\t')
@@ -32,29 +51,24 @@ document.getElementById('btn-send').addEventListener('click', async () => {
         
         const netscapeCookies = '# Netscape HTTP Cookie File\n' + cookieString;
 
-        // 4. 尝试直接发送到本地 HTTP 服务
         statusEl.textContent = '正在发送到本地程序...';
-        const isSuccess = await trySendToLocal(videoUrl, netscapeCookies);
+        const isSuccess = await trySendToLocal(videoUrl, netscapeCookies, currentPort);
 
         if (isSuccess) {
             statusEl.textContent = '✅ 发送成功，请查看 QisToolkit3';
             return;
         }
 
-        // 5. HTTP 失败（说明 YtDlp 窗体没开，HTTP 服务未启动），走协议回退方案
+        // HTTP 失败（说明 YtDlp 窗体没开，HTTP 服务未启动），走协议回退方案
         statusEl.textContent = '本地服务未启动，正在唤起 QisToolkit3...';
-        
-        // 注意：这里只传 URL 不传 Cookie，因为协议传 Cookie 极其不安全。
-        const protocolUrl = `qistoolkit3://ytdlp?url=${encodeURIComponent(videoUrl)}`;
-        window.open(protocolUrl, '_blank');
+        window.open(`qistoolkit3://start`, '_blank');
 
-        // 6. 等待程序启动并初始化 HTTP 服务（给一点缓冲时间）
         statusEl.textContent = '等待本地服务就绪...';
-        await new Promise(r => setTimeout(r, 1500)); // 等待 1.5 秒
+        await new Promise(r => setTimeout(r, 1500));
 
-        // 7. 再次尝试发送（此时程序已经被唤起，YtDlp 窗体已打开，HTTP 服务应该启动了）
+        // 再次尝试发送（此时程序已经被唤起，YtDlp 窗体已打开，HTTP 服务应该启动了）
         statusEl.textContent = '重试发送 Cookies...';
-        const retrySuccess = await trySendToLocal(videoUrl, netscapeCookies);
+        const retrySuccess = await trySendToLocal(videoUrl, netscapeCookies, currentPort);
 
         if (retrySuccess) {
             statusEl.textContent = '✅ 发送成功，请查看 QisToolkit3';
@@ -68,21 +82,15 @@ document.getElementById('btn-send').addEventListener('click', async () => {
     }
 });
 
-/**
- * 尝试向本地 HTTP 服务发送数据
- */
-async function trySendToLocal(url, cookies) {
+async function trySendToLocal(url, cookies, port) {
     try {
-        const response = await fetch('http://127.0.0.1:18888/download', {
+        const response = await fetch(`http://127.0.0.1:${port}/download`, {
             method: 'POST',
             headers: { 
                 'Content-Type': 'application/json',
-                'X-Qis-Token': 'QisToolkit3_WP_2025' // 必须与 C# 端保持一致
+                'X-Qis-Token': 'QisToolkit3_WP_2025'
             },
-            body: JSON.stringify({
-                url: url,
-                cookies: cookies
-            })
+            body: JSON.stringify({ url, cookies })
         });
         return response.ok;
     } catch (e) {

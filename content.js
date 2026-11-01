@@ -1,20 +1,50 @@
-// 监听键盘事件
-document.addEventListener('keydown', async (e) => {
-    // 1. 检查是否按下了 Home 键
-    if (e.key === 'Home') {
-        // 2. 如果用户正在输入框里打字（比如在发弹幕、评论），不要触发
-        if (isInputFocused()) return;
+let currentHotkey = 'Home';
+let currentPort = '18888';
 
-        // 3. 阻止浏览器的默认“回到顶部”行为
+// 1. 初始化时读取配置
+chrome.storage.local.get(['hotkey', 'port'], (res) => {
+    currentHotkey = res.hotkey || 'Home';
+    currentPort = res.port || '18888';
+});
+
+// 2. 监听用户在弹出的设置窗口中修改配置
+chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (changes.hotkey) currentHotkey = changes.hotkey.newValue;
+    if (changes.port) currentPort = changes.port.newValue;
+});
+
+// 3. 监听键盘事件
+document.addEventListener('keydown', async (e) => {
+    if (isInputFocused()) return;
+
+    if (checkHotkeyMatch(e, currentHotkey)) {
         e.preventDefault();
         e.stopPropagation();
-
-        // 4. 执行发送逻辑
         await sendVideoToQisToolkit();
     }
 });
 
-// 检查焦点是否在输入框或可编辑区域
+// 检查按键是否匹配（支持 Ctrl+D 这种组合键）
+function checkHotkeyMatch(e, hotkeyStr) {
+    const parts = hotkeyStr.toLowerCase().split('+').map(s => s.trim());
+    const keyPart = parts.find(p => !['ctrl', 'alt', 'shift', 'meta'].includes(p));
+    const needsCtrl = parts.includes('ctrl');
+    const needsAlt = parts.includes('alt');
+    const needsShift = parts.includes('shift');
+
+    // 修饰键匹配
+    if (e.ctrlKey !== needsCtrl) return false;
+    if (e.altKey !== needsAlt) return false;
+    if (e.shiftKey !== needsShift) return false;
+
+    // 主按键匹配
+    const pressedKey = e.key.toLowerCase();
+    // 处理空格键的特殊命名
+    const expectedKey = keyPart === 'space' ? ' ' : keyPart;
+    
+    return pressedKey === expectedKey;
+}
+
 function isInputFocused() {
     const el = document.activeElement;
     if (!el) return false;
@@ -31,21 +61,16 @@ async function sendVideoToQisToolkit() {
         // 通过消息发给 background.js 获取 Cookies
         const response = await new Promise((resolve, reject) => {
             chrome.runtime.sendMessage({ action: 'getCookies', url: videoUrl }, (res) => {
-                if (chrome.runtime.lastError) {
-                    reject(new Error(chrome.runtime.lastError.message));
-                } else {
-                    resolve(res);
-                }
+                if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                else resolve(res);
             });
         });
 
         const netscapeCookies = response.cookies;
-        if (!netscapeCookies) {
-            throw new Error('获取 Cookie 失败');
-        }
+        if (!netscapeCookies) throw new Error('获取 Cookie 失败');
 
         showToast('正在发送到本地程序...', 'info');
-        const isSuccess = await trySendToLocal(videoUrl, netscapeCookies);
+        const isSuccess = await trySendToLocal(videoUrl, netscapeCookies, currentPort);
         
         if (isSuccess) {
             showToast('✅ 发送成功，请查看 QisToolkit3', 'success');
@@ -54,18 +79,16 @@ async function sendVideoToQisToolkit() {
 
         // 失败则通过协议唤起程序
         showToast('本地服务未启动，正在唤起 QisToolkit3...', 'warn');
-        const protocolUrl = `qistoolkit3://start`;
-        window.open(protocolUrl, '_blank');
+        window.open(`qistoolkit3://start`, '_blank');
         
         showToast('等待本地服务就绪...', 'info');
         await new Promise(r => setTimeout(r, 1500));
         
-        // 重试发送
-        const retrySuccess = await trySendToLocal(videoUrl, netscapeCookies);
+        const retrySuccess = await trySendToLocal(videoUrl, netscapeCookies, currentPort);
         if (retrySuccess) {
             showToast('✅ 发送成功，请查看 QisToolkit3', 'success');
         } else {
-            showToast('⚠️ 程序似乎已唤起，但连接超时（可能是启动较慢），备用方案已启动', 'warn');
+            showToast('⚠️ 程序似乎已唤起，但连接超时，请检查', 'warn');
         }
 
     } catch (err) {
@@ -74,9 +97,9 @@ async function sendVideoToQisToolkit() {
     }
 }
 
-async function trySendToLocal(url, cookies) {
+async function trySendToLocal(url, cookies, port) {
     try {
-        const response = await fetch('http://127.0.0.1:18888/download', {
+        const response = await fetch(`http://127.0.0.1:${port}/download`, {
             method: 'POST',
             headers: { 
                 'Content-Type': 'application/json',
@@ -86,7 +109,7 @@ async function trySendToLocal(url, cookies) {
         });
         return response.ok;
     } catch (e) {
-        return false; // 端口未监听
+        return false;
     }
 }
 
@@ -98,8 +121,7 @@ function showToast(msg, type = 'info') {
     const toast = document.createElement('div');
     toast.id = 'qis-wp-toast';
     
-    // 设置颜色
-    let bg = 'rgba(30, 30, 46, 0.9)'; // 默认暗色
+    let bg = 'rgba(30, 30, 46, 0.9)';
     if (type === 'success') bg = 'rgba(76, 175, 80, 0.9)';
     if (type === 'error') bg = 'rgba(244, 67, 54, 0.9)';
     if (type === 'warn') bg = 'rgba(255, 152, 0, 0.9)';
